@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Copy the committed poster to the grader's output directory.
 
-The poster is rendered by draw.py and committed as entry.png; this
-entrypoint only copies it to $MAKEFUN_OUTPUT_DIR/entry.png and checks
-the copy (PNG signature, same size, identical sha256).
+The poster was generated in-session by generate.py from the committed
+entry-gen-1600.png; this entrypoint only copies it to
+$MAKEFUN_OUTPUT_DIR/entry.png and checks the copy (PNG signature, same
+size, identical sha256).
 
 Stdlib only, no network, no clock, no randomness, so it runs on the
 grader's read-only mount where the repository itself cannot be written.
