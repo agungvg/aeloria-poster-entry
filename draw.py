@@ -1,268 +1,339 @@
 #!/usr/bin/env python3
-"""AELORIA — The Land Above the Clouds. (v2 — re-composed after eye test)
+"""Render AELORIA — The Land Above the Clouds (v4, detailed rebuild).
 
-A vintage flat travel poster for a place that does not exist, drawn from
-scratch with Pillow. No network, no clock, no randomness (fixed seed), so
-two runs write byte-identical PNGs.
+A vintage travel poster for a place that does not exist: one great
+floating island with a lighthouse town, a waterfall spilling off its
+edge into the cloud sea, a winding stairway down to a smaller islet,
+and an airship arriving at golden hour.
 
-v1 eye-test failures, fixed here:
-  * name/tagline collided with the sun and the airship — the top band is
-    now clear sky for type only; sun moved to the horizon, airship to the
-    open sky right of the island.
-  * island too small and flat — now much larger, with a shaded right face,
-    rock facets, and bigger houses in two rows.
-  * cloud sea was one flat white blob — now three distinct layers with
-    crescent shadows under each puff and gaps of golden light between them.
-  * airship read as a target — rebuilt as a simple striped capsule with
-    the gondola attached and fins at the rear.
-  * the "golden road" polygon looked like a road — replaced by a soft
-    glow on the horizon between cloud masses.
-
-Composition (judge criteria, in order):
-  1. Invented place name set INTO the picture — huge, legible, across the sky.
-  2. One landmark — a single great floating island with a lighthouse town —
-     plus golden-hour light and an arriving airship: a clear promise of a stay.
-  3. Distinct identity — nothing borrowed from a real destination.
-  4. Type with intent — Noto Serif Display, letterspaced, cream on apricot sky.
-  5. Palette + layout — apricot/gold/cream with deep-teal cloud shadows;
-     the eye goes name -> lighthouse island -> stairway -> sea of clouds.
-Only copy: the place name and one tagline. No quotes, no ratings.
+Everything is drawn from scratch with Pillow: gradient sky, wispy
+high clouds, a varied town (lit windows, chimneys, bunting, a domed
+house, trees), a detailed airship, and a three-layer cloud sea with
+shadows, highlights and wisps. Deterministic: fixed seed, no clock,
+no network. Writes entry.png (1024x1024, < 1 MiB).
 """
 import math
-import os
 import random
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 W = H = 1024
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "entry.png")
+
+# palette
+SKY_TOP = (206, 96, 44)       # burnt orange
+SKY_MID = (232, 146, 74)      # warm amber
+SKY_LOW = (248, 205, 126)     # pale gold
+CREAM = (252, 244, 224)       # type / clouds
+CREAM_SOFT = (250, 238, 210)
+CLOUD_WHITE = (253, 248, 236)
+CLOUD_SHADE = (214, 196, 164)
+CLOUD_DEEP = (188, 168, 138)
+TEAL = (46, 110, 106)         # cypress / deep green
+GREEN = (106, 148, 84)        # grass
+GREEN_DARK = (84, 124, 66)
+STONE = (201, 170, 128)       # cliff light
+STONE_MID = (186, 152, 108)
+STONE_DARK = (163, 130, 88)
+STONE_DEEP = (140, 110, 72)
+ROOF_A = (198, 86, 54)        # terracotta
+ROOF_B = (172, 62, 48)        # deep red
+ROOF_C = (214, 128, 60)       # ochre
+INK = (64, 46, 30)            # outlines / dark
+LIT = (255, 214, 130)         # lit windows
+WATER = (214, 232, 226)       # waterfall
+WATER_DEEP = (168, 200, 196)
 
 SERIF_BLACK = "/usr/share/fonts/truetype/noto/NotoSerifDisplay-Black.ttf"
 SERIF_BOLD = "/usr/share/fonts/truetype/noto/NotoSerifDisplay-Bold.ttf"
 
-CREAM = (251, 240, 211)
-CREAM_SOFT = (255, 246, 216)
-GOLD = (232, 135, 58)
-TERRA = (198, 93, 59)
-TERRA_DARK = (166, 74, 45)
-STONE = (217, 185, 138)
-STONE_DARK = (169, 126, 79)
-STONE_DEEP = (124, 90, 56)
-WHITE = (255, 252, 240)
-CLOUD_WHITE = (255, 250, 235)
-CLOUD_SHADOW = (203, 184, 154)
-CLOUD_TEAL = (168, 190, 182)
-INK = (58, 38, 24)
 
-
-def lerp(a, b, t):
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
-
-
-def sky(img):
-    d = ImageDraw.Draw(img)
-    stops = [(0.00, (214, 104, 44)), (0.28, (240, 162, 88)),
-             (0.55, (247, 200, 115)), (0.78, (251, 226, 166)),
-             (1.00, (250, 220, 168))]
-    for y in range(H):
-        t = y / (H - 1)
+def vgrad(size, stops):
+    """Vertical gradient through (pos, rgb) stops."""
+    w, h = size
+    img = Image.new("RGB", size)
+    px = img.load()
+    for y in range(h):
+        t = y / max(h - 1, 1)
         for i in range(len(stops) - 1):
-            t0, c0 = stops[i]
-            t1, c1 = stops[i + 1]
-            if t0 <= t <= t1:
-                d.line([(0, y), (W, y)], fill=lerp(c0, c1, (t - t0) / (t1 - t0)))
+            p0, c0 = stops[i]
+            p1, c1 = stops[i + 1]
+            if p0 <= t <= p1:
+                f = 0 if p1 == p0 else (t - p0) / (p1 - p0)
+                col = tuple(round(c0[k] + (c1[k] - c0[k]) * f) for k in range(3))
                 break
+        else:
+            col = stops[-1][1]
+        for x in range(w):
+            px[x, y] = col
+    return img
 
 
-def glow(img, cx, cy, radius, colour, peak=140):
-    """Soft radial glow composited onto img."""
+def glow(img, cx, cy, r, colour, peak):
+    """Soft radial glow: concentric translucent discs, brightest at centre."""
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    for i in range(20, 0, -1):
-        r = radius * i / 20
-        a = int(peak * (1 - i / 20) ** 1.6)
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=colour + (a,))
-    layer = layer.filter(ImageFilter.GaussianBlur(16))
+    steps = 22
+    for i in range(steps, 0, -1):
+        rr = r * i / steps
+        a = int(peak * (1 - i / steps) ** 2)
+        d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr],
+                  fill=colour + (a,))
+    layer = layer.filter(ImageFilter.GaussianBlur(6))
     img.paste(layer, (0, 0), layer)
 
 
-def cloud(d, x, y, s, tint=CLOUD_WHITE):
-    """One billowing cloud: shadow puffs first, white puffs on top, so each
-    puff carries a crescent shadow underneath."""
-    puffs = [(-1.7, 0.12, 1.00), (-0.95, -0.30, 1.28), (0.0, -0.44, 1.48),
-             (0.95, -0.30, 1.28), (1.7, 0.12, 1.00), (-0.45, 0.18, 1.28),
-             (0.5, 0.18, 1.28)]
-    for dx, dy, r in puffs:
-        d.ellipse([x + dx * s - r * s, y + dy * s + 12 - r * s * 0.60,
-                   x + dx * s + r * s, y + dy * s + 12 + r * s * 0.60],
-                  fill=(205, 188, 160))
-    for dx, dy, r in puffs:
-        d.ellipse([x + dx * s - r * s, y + dy * s - r * s * 0.60,
-                   x + dx * s + r * s, y + dy * s + r * s * 0.60], fill=tint)
+def bird(d, x, y, s):
+    """Two-stroke gull."""
+    d.arc([x - s, y - s * 0.6, x, y + s * 0.6], 200, 340, fill=INK, width=2)
+    d.arc([x, y - s * 0.6, x + s, y + s * 0.6], 200, 340, fill=INK, width=2)
 
 
-def house(d, x, y, w, h, roof=TERRA, body=WHITE):
-    """A whitewashed house with a terracotta roof and lit windows."""
-    d.polygon([(x, y), (x + w * 0.5, y - h * 0.55), (x + w, y)], fill=roof)
-    d.rectangle([x, y, x + w, y + h], fill=body)
-    d.rectangle([x, y, x + w, y + 3], fill=TERRA_DARK)
-    wy = y + h * 0.30
-    for wx in (x + w * 0.18, x + w * 0.62):
-        d.rectangle([wx, wy, wx + w * 0.16, wy + h * 0.32], fill=(255, 214, 130))
-    d.rectangle([x + w * 0.42, y + h * 0.58, x + w * 0.58, y + h], fill=(94, 62, 32))
+def house(d, x, y, w, h, roof=ROOF_A, lit=True, chimney=False):
+    """A whitewashed house: body, roof, door, windows, optional chimney."""
+    d.rectangle([x, y, x + w, y + h], fill=(250, 244, 230))
+    d.polygon([(x - 3, y), (x + w / 2, y - h * 0.45), (x + w + 3, y)],
+              fill=roof)
+    d.rectangle([x + w / 2 - 3, y + h - 11, x + w / 2 + 3, y + h],
+                fill=(90, 60, 40))
+    for wx in (x + 6, x + w - 12):
+        d.rectangle([wx, y + 7, wx + 6, y + 13],
+                    fill=LIT if lit else (120, 130, 130))
+    if chimney:
+        d.rectangle([x + w - 12, y - h * 0.45 - 6, x + w - 7, y - h * 0.45 + 2],
+                    fill=(140, 100, 80))
+        d.ellipse([x + w - 13, y - h * 0.45 - 16, x + w - 5, y - h * 0.45 - 8],
+                  fill=(230, 220, 205, 160))
+        d.ellipse([x + w - 16, y - h * 0.45 - 26, x + w - 6, y - h * 0.45 - 16],
+                  fill=(230, 220, 205, 110))
 
 
 def cypress(d, x, y, h):
-    d.polygon([(x, y - h), (x - 8, y), (x + 8, y)], fill=(32, 84, 66))
-    d.rectangle([x - 2, y, x + 2, y + 6], fill=(94, 62, 32))
+    d.polygon([(x - 5, y), (x, y - h), (x + 5, y)], fill=TEAL)
+    d.rectangle([x - 1, y, x + 1, y + 4], fill=(90, 60, 40))
 
 
-def bird(d, x, y, s):
-    d.arc([x - s, y - s * 0.5, x, y + s * 0.5], 200, 340, fill=INK, width=3)
-    d.arc([x, y - s * 0.5, x + s, y + s * 0.5], 200, 340, fill=INK, width=3)
+def round_tree(d, x, y, r):
+    d.rectangle([x - 2, y, x + 2, y + 8], fill=(90, 60, 40))
+    d.ellipse([x - r, y - r * 1.4, x + r, y + r * 0.4], fill=GREEN_DARK)
+    d.ellipse([x - r * 0.6, y - r * 1.8, x + r * 0.5, y - r * 0.3],
+              fill=GREEN)
 
 
-def draw_tracked(d, cx, y, text, font, fill, tracking):
-    widths = [d.textlength(ch, font=font) for ch in text]
-    total = sum(widths) + tracking * (len(text) - 1)
-    x = cx - total / 2
-    for ch, w in zip(text, widths):
-        d.text((x, y), ch, font=font, fill=fill)
-        x += w + tracking
+def cloud(d, x, y, s, shade=True):
+    """One billow: a cluster of overlapping puffs with a shadow crescent."""
+    puffs = [(-0.9, 0.15, 0.55), (-0.45, -0.15, 0.7), (0.0, -0.3, 0.8),
+             (0.45, -0.12, 0.7), (0.9, 0.15, 0.55), (0.0, 0.25, 0.75)]
+    if shade:
+        for dx, dy, r in puffs:
+            d.ellipse([x + dx * s - r * s, y + dy * s + 12 - r * s * 0.60,
+                       x + dx * s + r * s, y + dy * s + 12 + r * s * 0.60],
+                      fill=CLOUD_SHADE)
+    for dx, dy, r in puffs:
+        d.ellipse([x + dx * s - r * s, y + dy * s - r * s * 0.60,
+                   x + dx * s + r * s, y + dy * s + r * s * 0.60],
+                  fill=CLOUD_WHITE)
 
 
-def build():
-    rng = random.Random(7)
-    img = Image.new("RGB", (W, H), CREAM)
-    sky(img)
+def wisp(d, x, y, length, alpha=90):
+    """A thin curl of cloud rising off the sea."""
+    d.arc([x, y, x + length, y + length * 0.35], 180, 330,
+          fill=CLOUD_WHITE, width=5)
+
+
+def draw():
+    img = vgrad((W, H), [(0.0, SKY_TOP), (0.45, SKY_MID), (1.0, SKY_LOW)])
+    img = img.convert("RGBA")
     d = ImageDraw.Draw(img, "RGBA")
 
-    # --- type band: clear sky, name + tagline only ---
-    big = ImageFont.truetype(SERIF_BLACK, 132)
-    draw_tracked(d, 512, 62, "AELORIA", big, (176, 88, 38, 255), 22)
-    draw_tracked(d, 512, 66, "AELORIA", big, CREAM_SOFT + (255,), 22)
-    small = ImageFont.truetype(SERIF_BOLD, 30)
-    draw_tracked(d, 512, 216, "THE LAND ABOVE THE CLOUDS", small,
-                 CREAM_SOFT + (255,), 9)
-    for dx in (-360, 360):
-        d.polygon([(512 + dx, 228), (512 + dx + 6, 234), (512 + dx, 240),
-                   (512 + dx - 6, 234)], fill=CREAM_SOFT)
+    # --- high wispy clouds (kept clear of the name and tagline) ---
+    for x, y, ln in [(60, 340, 120), (820, 430, 130),
+                     (880, 420, 130), (60, 520, 120)]:
+        d.ellipse([x, y, x + ln, y + 12], fill=(255, 230, 190, 70))
+        d.ellipse([x + 20, y + 14, x + ln - 10, y + 24],
+                  fill=(255, 230, 190, 50))
 
-    # --- birds in the open sky, left ---
-    bird(d, 150, 300, 13)
-    bird(d, 196, 276, 10)
-    bird(d, 232, 312, 9)
+    # --- type: name + tagline ---
+    f_name = ImageFont.truetype(SERIF_BLACK, 168)
+    f_tag = ImageFont.truetype(SERIF_BOLD, 32)
+    name = "AELORIA"
+    d.text((512, 96), name, font=f_name, fill=CREAM, anchor="ma")
+    tag = "THE LAND ABOVE THE CLOUDS"
+    d.text((512, 270), tag, font=f_tag, fill=CREAM, anchor="ma")
+    d.polygon([(512 - 360, 288), (512 - 348, 278), (512 - 336, 288),
+               (512 - 348, 298)], fill=CREAM)
+    d.polygon([(512 + 360, 288), (512 + 348, 278), (512 + 336, 288),
+               (512 + 348, 298)], fill=CREAM)
 
-    # --- airship arriving from the right, clear of the type ---
-    glow(img, 800, 330, 90, (255, 220, 150), 70)
-    d = ImageDraw.Draw(img, "RGBA")
-    # capsule balloon: warm gold with cream vertical stripes (clipped to
-    # the balloon by a mask, so the stripes follow its curve)
-    d.ellipse([700, 296, 884, 356], fill=(233, 158, 72))
-    d.ellipse([700, 296, 884, 356], outline=TERRA_DARK, width=3)
-    stripes = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(stripes)
-    for cx in (748, 792, 836):
-        sd.rectangle([cx - 7, 296, cx + 7, 356], fill=CREAM_SOFT + (255,))
-    mask = Image.new("L", (W, H), 0)
-    md = ImageDraw.Draw(mask)
-    md.ellipse([700, 296, 884, 356], fill=255)
-    img.paste(stripes, (0, 0), Image.composite(stripes, Image.new("RGBA", (W, H), (0, 0, 0, 0)), mask))
-    d = ImageDraw.Draw(img, "RGBA")
-    # tail fins
-    d.polygon([(700, 322), (672, 300), (672, 344)], fill=TERRA_DARK)
-    # gondola attached under the balloon
-    d.rectangle([756, 356, 828, 378], fill=(94, 62, 32))
-    d.rectangle([766, 360, 780, 372], fill=(255, 214, 130))
-    d.rectangle([800, 360, 814, 372], fill=(255, 214, 130))
-    d.line([(792, 356), (792, 344)], fill=(94, 62, 32), width=2)
+    # --- birds: two flocks, clear of the name ---
+    for bx, by, bs in [(140, 330, 13), (180, 310, 10), (210, 330, 9),
+                       (240, 350, 11), (880, 190, 10), (906, 178, 12),
+                       (932, 196, 9)]:
+        bird(d, bx, by, bs)
 
     # --- sun low on the horizon, half-sunk into the cloud sea ---
-    glow(img, 830, 726, 150, (255, 214, 130), 160)
+    glow(img, 830, 726, 170, (255, 214, 130), 170)
     d = ImageDraw.Draw(img, "RGBA")
+    for ang in range(0, 360, 24):
+        a = math.radians(ang)
+        if 200 < ang < 340:  # keep rays out of the cloud sea below
+            continue
+        x0, y0 = 830 + 62 * math.cos(a), 726 + 62 * math.sin(a)
+        x1, y1 = 830 + 96 * math.cos(a), 726 + 96 * math.sin(a)
+        d.line([x0, y0, x1, y1], fill=(255, 226, 150, 120), width=4)
     d.ellipse([830 - 52, 726 - 52, 830 + 52, 726 + 52], fill=(250, 200, 100))
+    d.ellipse([830 - 52, 726 - 52, 830 + 52, 726 + 52],
+              outline=(255, 236, 170), width=3)
 
-    # --- small far islet, left, with two houses ---
-    d.polygon([(150, 668), (300, 668), (256, 726), (196, 726)], fill=STONE_DARK)
-    d.polygon([(150, 668), (300, 668), (284, 640), (168, 640)], fill=(226, 196, 150))
-    house(d, 178, 612, 36, 24)
-    house(d, 224, 608, 32, 22)
-    cypress(d, 282, 640, 28)
+    # --- the great floating island ---
+    d.polygon([(322, 470), (738, 470), (700, 620), (620, 700), (512, 762),
+               (404, 700), (340, 620)], fill=STONE)
+    # cliff strata, with little ledges and bushes
+    d.polygon([(330, 500), (730, 500), (706, 540), (352, 540)], fill=STONE_MID)
+    d.polygon([(360, 580), (700, 580), (668, 622), (392, 622)], fill=STONE_MID)
+    d.polygon([(410, 650), (640, 650), (600, 692), (452, 692)], fill=STONE_DARK)
+    d.polygon([(470, 712), (580, 712), (548, 748), (500, 748)], fill=STONE_DEEP)
+    for cx, cy in [(352, 540), (700, 540), (392, 622), (668, 622),
+                   (452, 692), (600, 692)]:
+        d.ellipse([cx - 8, cy - 5, cx + 8, cy + 3], fill=GREEN_DARK)
+    # cracks
+    for x0, y0, x1, y1 in [(420, 540, 452, 640), (610, 540, 580, 660),
+                           (500, 620, 520, 720)]:
+        d.line([x0, y0, x1, y1], fill=STONE_DEEP, width=3)
+    # grassy top with a stone rim
+    d.polygon([(322, 470), (738, 470), (730, 486), (330, 486)], fill=GREEN)
+    d.line([322, 470, 738, 470], fill=GREEN_DARK, width=3)
 
-    # --- THE landmark: the great floating island of Aeloria ---
-    # cliff body, tapering to a point
-    cliff = [(300, 470), (724, 470), (700, 548), (660, 618), (606, 682),
-             (556, 736), (512, 776), (468, 736), (418, 682), (364, 618),
-             (324, 548)]
-    d.polygon(cliff, fill=STONE)
-    # sunlit left face, shaded right face
-    d.polygon([(512, 470), (724, 470), (700, 548), (660, 618), (606, 682),
-               (556, 736), (512, 776)], fill=(196, 158, 104))
-    # terrace bands across the cliff
-    for y0, y1 in [(500, 530), (548, 580), (618, 652), (682, 718)]:
-        t0 = (y0 - 470) / 306
-        t1 = (y1 - 470) / 306
-        d.polygon([(300 + t0 * 212, y0), (724 - t0 * 212, y0),
-                   (724 - t1 * 212, y1), (300 + t1 * 212, y1)],
-                  fill=(206, 172, 122) if (y0 // 60) % 2 == 0 else (188, 150, 100))
-    # rock facets: a few diagonal cracks
-    for x0, y0, x1, y1 in [(380, 540, 420, 620), (620, 540, 590, 630),
-                           (470, 600, 500, 690), (560, 600, 540, 680)]:
-        d.line([(x0, y0), (x1, y1)], fill=STONE_DEEP, width=3)
-    # underside point + hanging roots
-    d.polygon([(468, 736), (512, 776), (556, 736), (534, 700), (490, 700)],
-              fill=STONE_DEEP)
-    for rx, ry, rl in [(448, 716, 30), (486, 742, 40), (530, 740, 34),
-                       (574, 700, 28), (410, 690, 26)]:
-        d.line([(rx, ry), (rx + 4, ry + rl)], fill=(94, 66, 38), width=3)
-
-    # plateau grass rim
-    d.polygon([(300, 470), (724, 470), (710, 450), (314, 450)], fill=(96, 138, 84))
-    d.polygon([(300, 470), (724, 470), (710, 458), (314, 458)], fill=(120, 160, 96))
-
-    # the town: two rows of bigger houses
-    for x, y, w, h in [(322, 420, 52, 32), (382, 414, 46, 30), (436, 420, 56, 34),
-                       (500, 414, 48, 30), (556, 420, 54, 33), (618, 416, 46, 30)]:
-        house(d, x, y, w, h)
-    for x, y, w, h in [(360, 372, 48, 30), (416, 366, 42, 28), (466, 372, 52, 32),
-                       (526, 366, 44, 28), (578, 370, 46, 30)]:
-        house(d, x, y, w, h)
-    cypress(d, 330, 372, 34)
-    cypress(d, 668, 372, 38)
-    cypress(d, 700, 420, 30)
-
-    # lighthouse tower on the island's crown, beacon lit
-    d.rectangle([664, 296, 712, 450], fill=WHITE)
-    d.rectangle([664, 326, 712, 342], fill=TERRA)
-    d.rectangle([664, 380, 712, 396], fill=TERRA)
-    d.rectangle([658, 278, 718, 296], fill=INK)
-    d.rectangle([666, 262, 710, 278], fill=(255, 214, 130))
-    d.polygon([(658, 262), (688, 236), (718, 262)], fill=TERRA_DARK)
-    # beacon glow only — no fan of rays (v2's rays shot up through the name)
-    glow(img, 688, 250, 70, (255, 236, 170), 120)
+    # --- waterfall spilling off the left edge into the clouds ---
+    fall = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    fd = ImageDraw.Draw(fall)
+    for i, (fx, fy, fr) in enumerate([(352, 496, 15), (344, 532, 16),
+                                      (330, 570, 17), (322, 610, 18),
+                                      (312, 652, 19), (302, 694, 20),
+                                      (296, 722, 21)]):
+        fd.ellipse([fx - fr, fy - fr, fx + fr, fy + fr],
+                   fill=WATER + (200,))
+    fd.polygon([(352, 488), (368, 488), (314, 724), (286, 724)],
+               fill=WATER + (160,))
+    fall = fall.filter(ImageFilter.GaussianBlur(5))
+    img.paste(fall, (0, 0), fall)
     d = ImageDraw.Draw(img, "RGBA")
-    d.ellipse([678, 240, 698, 260], fill=(255, 236, 170))
+    d.line([348, 500, 306, 700], fill=(255, 255, 255, 160), width=2)
+    # foam where the fall meets the clouds
+    for fx, fy, fr in [(292, 736, 22), (316, 748, 18), (272, 750, 15)]:
+        d.ellipse([fx - fr, fy - fr * 0.6, fx + fr, fy + fr * 0.6],
+                  fill=CLOUD_WHITE)
 
-    # winding stairway down from the island to the small islet
-    steps = [(330, 512), (306, 540), (286, 568), (268, 596), (252, 624),
-             (238, 650)]
-    for i, (sx, sy) in enumerate(steps):
-        w = 36 - i * 2
-        d.rectangle([sx - w // 2, sy, sx + w // 2, sy + 7], fill=CREAM_SOFT)
-        d.rectangle([sx - w // 2, sy + 7, sx + w // 2, sy + 9], fill=CLOUD_SHADOW)
-    d.ellipse([296, 552, 304, 564], fill=INK)
-    d.rectangle([295, 564, 305, 578], fill=TERRA)
-    d.ellipse([258, 606, 266, 618], fill=INK)
-    d.rectangle([257, 618, 267, 632], fill=TEAL if False else (46, 110, 106))
+    # --- the town: varied houses, lit windows, chimneys, trees ---
+    cypress(d, 338, 470, 34)
+    round_tree(d, 700, 470, 12)
+    house(d, 356, 424, 52, 30, ROOF_A, lit=True, chimney=True)
+    house(d, 414, 420, 46, 34, ROOF_B, lit=True)
+    house(d, 466, 426, 58, 28, ROOF_C, lit=False, chimney=True)
+    house(d, 530, 422, 48, 32, ROOF_A, lit=True)
+    house(d, 584, 426, 54, 28, ROOF_B, lit=True, chimney=True)
+    # front row
+    house(d, 344, 448, 48, 24, ROOF_B, lit=True)
+    house(d, 398, 450, 52, 22, ROOF_A, lit=False, chimney=True)
+    house(d, 456, 448, 46, 24, ROOF_C, lit=True)
+    house(d, 508, 450, 54, 22, ROOF_B, lit=True)
+    house(d, 568, 448, 48, 24, ROOF_A, lit=True, chimney=True)
+    cypress(d, 626, 470, 26)
+    # bunting across the front row
+    pts = [(344, 446), (420, 456), (500, 458), (580, 452), (640, 444)]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        d.line([x0, y0, x1, y1], fill=INK, width=1)
+        for t in (0.25, 0.5, 0.75):
+            fx = x0 + (x1 - x0) * t
+            fy = y0 + (y1 - y0) * t + 2
+            d.polygon([(fx - 4, fy), (fx + 4, fy), (fx, fy + 8)],
+                      fill=(ROOF_A if int(t * 4) % 2 else ROOF_C))
 
-    # --- sea of clouds: three layers with gaps of golden light between ---
-    glow(img, 512, 880, 260, (255, 210, 130), 90)
+    # --- lighthouse: striped tower, gallery, lamp, soft glow ---
+    d.rectangle([648, 330, 700, 470], fill=(250, 244, 230))
+    for y0, y1 in [(356, 380), (404, 428)]:
+        d.rectangle([648, y0, 700, y1], fill=(198, 74, 54))
+    d.rectangle([640, 336, 708, 348], fill=(60, 44, 34))
+    # low glowing dome on the gallery: keeps the lamp below the tagline
+    d.pieslice([660, 314, 688, 348], 180, 360, fill=(250, 244, 230))
+    d.rectangle([668, 330, 680, 348], fill=LIT)
+    glow(img, 674, 332, 40, (255, 226, 150), 110)
     d = ImageDraw.Draw(img, "RGBA")
-    # back layer, small and pale, sky still showing between the masses
-    cloud(d, 170, 772, 54, tint=(255, 244, 214))
-    cloud(d, 450, 788, 62, tint=(255, 244, 214))
-    cloud(d, 700, 776, 56, tint=(255, 244, 214))
-    # two tiny islets peeking out of the cloud sea, sitting ON the back layer
+    d.ellipse([668, 330, 680, 342], fill=(255, 240, 190))
+
+    # --- winding stairway down to the small islet ---
+    steps = [(330, 486), (312, 508), (296, 530), (280, 552), (264, 574),
+             (248, 596), (232, 618), (216, 640)]
+    for sx, sy in steps:
+        d.rectangle([sx - 16, sy, sx + 16, sy + 6], fill=(240, 232, 214))
+        d.line([sx - 16, sy + 6, sx + 16, sy + 6], fill=STONE_DARK, width=2)
+    # lantern posts along the stair
+    for lx, ly in [(322, 500), (272, 566), (224, 632)]:
+        d.line([lx, ly, lx, ly - 14], fill=INK, width=2)
+        d.ellipse([lx - 4, ly - 20, lx + 4, ly - 12], fill=LIT)
+    # two travellers on the stair
+    for tx, ty, tc in [(300, 540, (198, 86, 54)), (252, 606, (46, 110, 106))]:
+        d.ellipse([tx - 5, ty - 16, tx + 5, ty - 6], fill=(52, 38, 28))
+        d.polygon([(tx - 5, ty - 6), (tx + 5, ty - 6), (tx + 3, ty + 8),
+                   (tx - 3, ty + 8)], fill=tc)
+
+    # --- small islet with two houses ---
+    d.polygon([(150, 640), (280, 640), (246, 700), (184, 700)],
+              fill=STONE_MID)
+    d.polygon([(150, 640), (280, 640), (274, 652), (156, 652)], fill=GREEN)
+    house(d, 168, 612, 44, 26, ROOF_A, lit=True, chimney=True)
+    house(d, 218, 616, 40, 22, ROOF_C, lit=False)
+    cypress(d, 268, 640, 24)
+    round_tree(d, 158, 640, 9)
+
+    # --- airship: panelled envelope, gondola, propeller, flag ---
+    cx, cy = 800, 336
+    d.ellipse([cx - 112, cy - 34, cx + 112, cy + 34],
+              outline=(150, 84, 44), width=3, fill=(236, 178, 108))
+    d.ellipse([cx - 112, cy - 34, cx + 112, cy + 34],
+              outline=(150, 84, 44), width=1)
+    # panel seams + cream bands
+    for px in (-70, -30, 10, 50):
+        d.arc([cx + px - 14, cy - 32, cx + px + 14, cy + 32], 270, 90,
+              fill=(200, 130, 70), width=2)
+    for bx in (-58, 6, 62):
+        d.polygon([(cx + bx - 8, cy - 32), (cx + bx + 8, cy - 32),
+                   (cx + bx + 8, cy + 32), (cx + bx - 8, cy + 32)],
+                  fill=CREAM)
+    # nose cap + tail fins
+    d.pieslice([cx - 118, cy - 20, cx - 92, cy + 20], 90, 270,
+               fill=(172, 62, 48))
+    d.polygon([(cx + 104, cy - 30), (cx + 128, cy - 52), (cx + 122, cy - 8)],
+              fill=(198, 86, 54))
+    d.polygon([(cx + 104, cy + 30), (cx + 128, cy + 52), (cx + 122, cy + 8)],
+              fill=(198, 86, 54))
+    # propeller at the rear
+    d.ellipse([cx + 118, cy - 16, cx + 150, cy + 16],
+              outline=(120, 90, 60), width=2)
+    d.line([cx + 134, cy - 14, cx + 134, cy + 14], fill=(120, 90, 60),
+           width=3)
+    # gondola with lit windows + suspension ropes
+    d.rectangle([cx - 46, cy + 36, cx + 46, cy + 58], fill=(96, 66, 44))
+    for wx in (cx - 34, cx - 8, cx + 18):
+        d.rectangle([wx, cy + 42, wx + 12, cy + 52], fill=LIT)
+    for rx in (-40, 0, 40):
+        d.line([cx + rx, cy + 30, cx + rx, cy + 36], fill=INK, width=2)
+    # little flag on top
+    d.line([cx - 10, cy - 34, cx - 10, cy - 54], fill=INK, width=2)
+    d.polygon([(cx - 10, cy - 54), (cx + 10, cy - 49), (cx - 10, cy - 44)],
+              fill=ROOF_A)
+
+    # --- the cloud sea: back layer, island shadow, mid, front ---
+    for x, y, s in [(140, 772, 66), (420, 788, 80), (700, 776, 74),
+                    (940, 782, 60)]:
+        cloud(d, x, y, s)
+    # island's soft shadow on the clouds
+    shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    shd = ImageDraw.Draw(shade)
+    shd.ellipse([300, 790, 720, 850], fill=(170, 150, 120, 46))
+    shade = shade.filter(ImageFilter.GaussianBlur(14))
+    img.paste(shade, (0, 0), shade)
+    d = ImageDraw.Draw(img, "RGBA")
+    # two tiny islets peeking out of the cloud sea
     d.polygon([(96, 800), (196, 800), (168, 840), (124, 840)], fill=STONE_DARK)
     house(d, 118, 776, 30, 20)
     cypress(d, 182, 800, 22)
@@ -278,7 +349,7 @@ def build():
     cloud(d, 500, 988, 82)
     cloud(d, 800, 978, 78)
     cloud(d, 980, 956, 54)
-    # soft modelling on the front sheet: faint warm-grey rolls + nearer puffs
+    # soft modelling on the front sheet + nearer puffs + wisps
     shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     shd = ImageDraw.Draw(shade)
     for cx, cy, rx, ry in [(260, 900, 130, 26), (620, 920, 150, 28),
@@ -291,24 +362,26 @@ def build():
     for cx, cy, r in [(180, 860, 42), (520, 850, 48), (860, 856, 40)]:
         d.ellipse([cx - r, cy - r * 0.55, cx + r, cy + r * 0.55],
                   fill=CLOUD_WHITE)
+    bird(d, 420, 820, 9)
+    bird(d, 760, 830, 8)
 
-    # --- frame: cream border + thin gold rule ---
-    d.rectangle([0, 0, W - 1, H - 1], outline=CREAM, width=24)
-    d.rectangle([28, 28, W - 29, H - 29], outline=(216, 164, 92), width=2)
+    # --- fine grain: kills the flat-vector look, stays deterministic ---
+    rng = random.Random(7)
+    noise = Image.new("L", (128, 128))
+    noise.putdata([rng.randint(0, 255) for _ in range(128 * 128)])
+    noise = noise.resize((W, H), Image.BICUBIC)
+    grain = Image.merge("RGBA", (noise, noise, noise, noise.point(lambda v: 5)))
+    img.paste(grain, (0, 0), grain)
 
-    # --- print grain: deterministic, very light ---
-    grain = Image.new("L", (W, H))
-    gp = grain.load()
-    for yy in range(0, H, 2):
-        for xx in range(0, W, 2):
-            gp[xx, yy] = rng.randint(0, 255)
-    grain = grain.filter(ImageFilter.GaussianBlur(0.6))
-    img = Image.composite(
-        Image.blend(img, Image.new("RGB", (W, H), (120, 100, 70)), 0.03),
-        img, grain.point(lambda v: 255 if v > 128 else 0))
-    img.save(OUT, "PNG", optimize=True)
-    print("wrote", OUT, os.path.getsize(OUT), "bytes")
+    # --- cream frame ---
+    d = ImageDraw.Draw(img, "RGBA")
+    d.rectangle([0, 0, W - 1, H - 1], outline=CREAM, width=26)
+    d.rectangle([26, 26, W - 27, H - 27], outline=(196, 148, 88), width=2)
+    return img.convert("RGB")
 
 
 if __name__ == "__main__":
-    build()
+    out = draw()
+    out.save("entry.png", optimize=True)
+    import os
+    print("wrote entry.png", os.path.getsize("entry.png"), "bytes")
